@@ -1,0 +1,454 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Arial', sans-serif;
+    background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+    color: #fff;
+    min-height: 100vh;
+    overflow-x: hidden;
+}
+
+#game-container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+/* Header */
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 10px;
+    margin-bottom: 20px;
+}
+
+header h1 {
+    font-size: 2em;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+}
+
+#game-info {
+    display: flex;
+    gap: 10px;
+}
+
+/* Buttons */
+.btn {
+    padding: 10px 20px;
+    background: #4a90e2;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 1em;
+    transition: all 0.3s;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+}
+
+.btn:hover {
+    background: #357abd;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 8px rgba(0, 0, 0, 0.4);
+}
+
+.btn-primary {
+    background: #e74c3c;
+    font-size: 1.2em;
+    padding: 15px 30px;
+}
+
+.btn-primary:hover {
+    background: #c0392b;
+}
+
+/* Player Area */
+.player-area {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 15px;
+    padding: 20px;
+    margin-bottom: 20px;
+}
+
+.player-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+    padding: 15px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+}
+
+.player-name {
+    font-size: 1.5em;
+    font-weight: bold;
+}
+
+.health-mana {
+    display: flex;
+    gap: 30px;
+    font-size: 1.2em;
+}
+
+.health, .mana {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.label {
+    font-weight: bold;
+}
+
+/* Board (where minions are played) */
+.board {
+    min-height: 150px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 2px dashed rgba(255, 255, 255, 0.2);
+    border-radius: 10px;
+    padding: 10px;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 15px;
+}
+
+.board:empty::before {
+    content: 'Play minions here';
+    color: rgba(255, 255, 255, 0.3);
+    font-size: 1.2em;
+}
+
+/* Hand (cards in hand) */
+.hand {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    flex-wrap: wrap;
+    padding: 10px;
+    min-height: 100px;
+}
+
+/* Cards */
+.card {
+    width: 140px;
+    height: 200px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border: 3px solid #ffd700;
+    border-radius: 10px;
+    padding: 10px;
+    cursor: pointer;
+    position: relative;
+    transition: all 0.3s;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+}
+
+.card:hover {
+    transform: translateY(-10px) scale(1.05);
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.5);
+    border-color: #fff;
+}
+
+.card.can-play {
+    border-color: #00ff00;
+    box-shadow: 0 0 20px rgba(0, 255, 0, 0.5);
+}
+
+.card.selected {
+    transform: translateY(-20px) scale(1.1);
+    border-color: #ffff00;
+    box-shadow: 0 0 30px rgba(255, 255, 0, 0.8);
+}
+
+.card-cost {
+    position: absolute;
+    top: -10px;
+    left: -10px;
+    width: 35px;
+    height: 35px;
+    background: #1a5490;
+    border: 2px solid #fff;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.3em;
+    font-weight: bold;
+    color: #fff;
+    text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.8);
+}
+
+.card-name {
+    font-size: 1em;
+    font-weight: bold;
+    text-align: center;
+    margin-top: 15px;
+    color: #fff;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+}
+
+.card-image {
+    font-size: 3em;
+    text-align: center;
+    margin: 10px 0;
+}
+
+.card-stats {
+    display: flex;
+    justify-content: space-between;
+    font-size: 1.2em;
+    font-weight: bold;
+    background: rgba(0, 0, 0, 0.6);
+    padding: 5px 8px;
+    border-radius: 5px;
+}
+
+.card-attack {
+    color: #fff;
+    text-shadow: 0 0 8px #ff0000, 0 0 12px #ff0000;
+}
+
+.card-health {
+    color: #fff;
+    text-shadow: 0 0 8px #00ff00, 0 0 12px #00ff00;
+}
+
+.card-description {
+    font-size: 0.75em;
+    text-align: center;
+    font-style: italic;
+    opacity: 0.9;
+}
+
+/* Minion Cards (on board) */
+.minion {
+    width: 120px;
+    height: 160px;
+    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+    border: 3px solid #fff;
+    border-radius: 10px;
+    padding: 8px;
+    cursor: pointer;
+    position: relative;
+    transition: all 0.3s;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+}
+
+.minion:hover {
+    transform: scale(1.05);
+    box-shadow: 0 6px 12px rgba(0, 0, 0, 0.5);
+}
+
+.minion.can-attack {
+    border-color: #ff0000;
+    box-shadow: 0 0 20px rgba(255, 0, 0, 0.5);
+    animation: pulse 1s infinite;
+}
+
+.minion.selected {
+    border-color: #ffff00;
+    box-shadow: 0 0 30px rgba(255, 255, 0, 0.8);
+}
+
+.minion.exhausted {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+@keyframes pulse {
+    0%, 100% {
+        box-shadow: 0 0 20px rgba(255, 0, 0, 0.5);
+    }
+    50% {
+        box-shadow: 0 0 30px rgba(255, 0, 0, 0.8);
+    }
+}
+
+.minion-name {
+    font-size: 0.85em;
+    font-weight: bold;
+    text-align: center;
+    color: #fff;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+}
+
+.minion-image {
+    font-size: 2.5em;
+    text-align: center;
+}
+
+.minion-stats {
+    display: flex;
+    justify-content: space-between;
+    font-size: 1.1em;
+    font-weight: bold;
+    background: rgba(0, 0, 0, 0.6);
+    padding: 5px 8px;
+    border-radius: 5px;
+    color: #fff;
+}
+
+.minion-stats .card-attack {
+    color: #fff;
+    text-shadow: 0 0 8px #ff0000, 0 0 12px #ff0000;
+}
+
+.minion-stats .card-health {
+    color: #fff;
+    text-shadow: 0 0 8px #00ff00, 0 0 12px #00ff00;
+}
+
+/* Card Back (for enemy hand) */
+.card-back {
+    width: 100px;
+    height: 140px;
+    background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+    border: 3px solid #ffd700;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 3em;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+}
+
+.card-back::before {
+    content: '🎴';
+}
+
+/* Battle Log */
+#battle-log {
+    background: rgba(0, 0, 0, 0.4);
+    border-radius: 10px;
+    padding: 15px;
+    margin-bottom: 20px;
+    min-height: 100px;
+}
+
+#turn-indicator {
+    font-size: 1.5em;
+    font-weight: bold;
+    text-align: center;
+    margin-bottom: 10px;
+    padding: 10px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 5px;
+}
+
+#turn-indicator.enemy-turn {
+    background: rgba(255, 0, 0, 0.3);
+}
+
+#log-messages {
+    max-height: 150px;
+    overflow-y: auto;
+    font-size: 0.9em;
+}
+
+.log-entry {
+    padding: 5px;
+    margin-bottom: 3px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 3px;
+}
+
+/* Action Buttons */
+.action-buttons {
+    display: flex;
+    justify-content: center;
+    gap: 15px;
+    margin-top: 15px;
+}
+
+/* Collection Screen */
+#collection-screen {
+    background: rgba(0, 0, 0, 0.5);
+    border-radius: 15px;
+    padding: 30px;
+}
+
+.collection-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 30px;
+}
+
+.collection-header h2 {
+    font-size: 2em;
+}
+
+#card-collection {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 20px;
+}
+
+/* Game Over Screen */
+#game-over-screen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.9);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.game-over-content {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    padding: 50px;
+    border-radius: 20px;
+    text-align: center;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.game-over-content h2 {
+    font-size: 3em;
+    margin-bottom: 20px;
+}
+
+.game-over-content p {
+    font-size: 1.5em;
+    margin-bottom: 30px;
+}
+
+/* Hidden */
+.hidden {
+    display: none !important;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .card {
+        width: 100px;
+        height: 150px;
+    }
+
+    .minion {
+        width: 90px;
+        height: 120px;
+    }
+
+    header h1 {
+        font-size: 1.5em;
+    }
+}
