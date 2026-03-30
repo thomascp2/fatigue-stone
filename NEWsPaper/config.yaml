@@ -1,0 +1,6 @@
+refresh_interval_seconds: 300
+grok_model: "grok-4-1-fast-reasoning"
+kalshi_base_url: "https://api.elections.kalshi.com/trade-api/v2"
+prizepicks_base: "https://partner-api.prizepicks.com"
+default_sports: ["NBA", "NHL", "MLB"]
+# Keys loaded from .env — see .env.example for required variables

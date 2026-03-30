@@ -1,0 +1,10 @@
+# Secrets — never commit
+.env
+
+# DB and runtime artifacts
+sports_betting.db
+__pycache__/
+*.pyc
+.vscode/
+.claude/
+python/
