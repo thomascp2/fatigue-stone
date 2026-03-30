@@ -539,7 +539,7 @@ with tab_props:
 
     df = build_props_df(filtered_props, enrichment=enrichment if enrichment and not enrichment.get("_error") else None)
     if not df.empty:
-        st.dataframe(df, width="stretch")
+        st.dataframe(df, use_container_width=True, hide_index=True)
     else:
         st.info("No props match your filters. Try widening the time window or removing filters.")
 
@@ -554,7 +554,7 @@ with tab_props:
         st.subheader(label)
         df_cx = kalshi_games_df(ctx_kalshi)
         if not df_cx.empty:
-            st.dataframe(df_cx, width="stretch")
+            st.dataframe(df_cx, use_container_width=True, hide_index=True)
         else:
             st.info("No game lines found for this filter.")
 
@@ -583,7 +583,7 @@ with tab_kalshi:
                        or search_k.lower() in r["dog"].lower(), axis=1
             )
             df_show = df_show[mask]
-        st.dataframe(df_show, width="stretch")
+        st.dataframe(df_show, use_container_width=True, hide_index=True)
         st.caption(
             "fav % / dog % = Kalshi implied win probability.  "
             "vig = market take (lower = tighter market).  "
@@ -598,7 +598,7 @@ with tab_kalshi:
     st.subheader(f"Championship Futures ({len(futures_markets)} markets)")
     df_fut = kalshi_futures_df(futures_markets)
     if not df_fut.empty:
-        st.dataframe(df_fut, width="stretch")
+        st.dataframe(df_fut, use_container_width=True, hide_index=True)
     else:
         st.info("No futures data.")
 
@@ -634,7 +634,7 @@ with tab_grok:
             ipt = result.get("implied_prob_table")
             if ipt:
                 st.subheader("Implied Probability Table")
-                st.dataframe(pd.DataFrame(ipt), width="stretch")
+                st.dataframe(pd.DataFrame(ipt), use_container_width=True, hide_index=True)
 
             for section, key in [("Breakdown", "detailed_breakdown"), ("Bottom Line", "bottom_line")]:
                 items = result.get(key)

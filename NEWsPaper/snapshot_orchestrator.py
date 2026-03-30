@@ -61,8 +61,43 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS best_bets (
         timestamp TEXT, view_level TEXT, filter_json TEXT, bets_json TEXT
     )''')
+    # Per-sport PrizePicks cache — survives orchestrator restarts
+    c.execute('''CREATE TABLE IF NOT EXISTS pp_cache (
+        sport TEXT PRIMARY KEY,
+        data TEXT,
+        fetched_at REAL
+    )''')
     conn.commit()
     conn.close()
+
+
+def _save_pp_sport(sport, props_list):
+    """Persist a successful sport fetch to SQLite so restarts don't lose it."""
+    try:
+        conn = sqlite3.connect(DB)
+        conn.execute(
+            "INSERT OR REPLACE INTO pp_cache VALUES (?, ?, ?)",
+            (sport, json.dumps(props_list), time.time())
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[WARN] pp_cache write {sport}: {e}")
+
+
+def _load_pp_sport(sport):
+    """Load last-good per-sport props from SQLite. Returns (props_list, fetched_at) or (None, 0)."""
+    try:
+        conn = sqlite3.connect(DB)
+        row = conn.execute(
+            "SELECT data, fetched_at FROM pp_cache WHERE sport=?", (sport,)
+        ).fetchone()
+        conn.close()
+        if row:
+            return json.loads(row[0]), row[1]
+    except Exception as e:
+        print(f"[WARN] pp_cache read {sport}: {e}")
+    return None, 0
 
 
 # -- Kalshi -------------------------------------------------------------------
@@ -165,23 +200,77 @@ def fetch_kalshi_markets():
 
 # -- PrizePicks ---------------------------------------------------------------
 
+def _annotate_props(props, included, sport):
+    """Annotate props list in-place with _sport/_player/_team/_team_display."""
+    player_lookup = {}
+    for item in included:
+        if item.get("type") != "new_player":
+            continue
+        attrs = item.get("attributes", {})
+        player_lookup[item["id"]] = {
+            "name":      attrs.get("display_name", ""),
+            "team":      attrs.get("team", ""),
+            "team_name": attrs.get("team_name", ""),
+            "market":    attrs.get("market", ""),
+            "position":  attrs.get("position", ""),
+        }
+    for p in props:
+        if not isinstance(p, dict):
+            continue
+        p["_sport"] = sport
+        player_rel = (p.get("relationships") or {}).get("new_player", {})
+        player_id  = (player_rel.get("data") or {}).get("id")
+        info       = player_lookup.get(player_id, {})
+        p["_player"]       = info.get("name") or p.get("attributes", {}).get("description", "")
+        p["_team"]         = info.get("team", "")
+        p["_team_name"]    = f"{info.get('market','')} {info.get('team_name','')}".strip()
+        p["_team_display"] = p["_team_name"] or p.get("attributes", {}).get("description", "")
+
+
 def fetch_prizepicks_props():
+    """
+    Fetch PrizePicks projections.  Each sport is cached independently (both
+    in-memory and SQLite) so a restart or a 429 on one sport never wipes the
+    others.  Falls back to last-good SQLite data when the API fails.
+    """
     global _pp_cache
     now = time.time()
+
+    # Fast path: combined in-memory cache still fresh
     if _pp_cache["data"] is not None and now - _pp_cache["fetched_at"] < PP_CACHE_TTL:
         cached = _pp_cache["data"]
         print(f"[INFO] PrizePicks cache hit ({cached['total']} props, age {int(now - _pp_cache['fetched_at'])}s)")
         return cached
 
-    month = datetime.now().month
-    active = ACTIVE_LEAGUES_BY_MONTH.get(month, ["NBA", "NHL"])
-    all_props = []
+    month   = datetime.now().month
+    active  = ACTIVE_LEAGUES_BY_MONTH.get(month, ["NBA", "NHL"])
     headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
+    # Per-sport in-memory sub-caches so we only hit fresh ones
+    if not hasattr(fetch_prizepicks_props, "_sport_cache"):
+        fetch_prizepicks_props._sport_cache = {}
+
+    all_props  = []
+    first_fetch = True  # no sleep before the first sport
+
     for sport in active:
+        sport_cache = fetch_prizepicks_props._sport_cache.get(sport, {"data": None, "fetched_at": 0})
+
+        # Sport sub-cache still fresh — skip API call
+        if sport_cache["data"] is not None and now - sport_cache["fetched_at"] < PP_CACHE_TTL:
+            age_m = int((now - sport_cache["fetched_at"]) / 60)
+            print(f"[INFO] {sport}: sub-cache hit ({len(sport_cache['data'])} props, age {age_m}m)")
+            all_props.extend(sport_cache["data"])
+            continue
+
+        if not first_fetch:
+            time.sleep(10)  # 10s between league fetches — well under rate limits
+        first_fetch = False
+
         league_id = LEAGUE_IDS[sport]
-        fetched = False
-        for attempt in range(2):  # one retry on 429
+        fetched_props = None
+
+        for attempt in range(2):
             try:
                 resp = requests.get(
                     f"{config['prizepicks_base']}/projections",
@@ -190,47 +279,20 @@ def fetch_prizepicks_props():
                     timeout=15
                 )
                 if resp.status_code == 200:
-                    body = resp.json()
-                    props = body.get("data", [])
+                    body     = resp.json()
+                    props    = [p for p in body.get("data", []) if isinstance(p, dict)]
                     included = body.get("included", [])
-
-                    # Build player lookup from included (name + team info for drill-down)
-                    player_lookup = {}
-                    for item in included:
-                        if item.get("type") != "new_player":
-                            continue
-                        attrs = item.get("attributes", {})
-                        player_lookup[item["id"]] = {
-                            "name":      attrs.get("display_name", ""),
-                            "team":      attrs.get("team", ""),
-                            "team_name": attrs.get("team_name", ""),
-                            "market":    attrs.get("market", ""),
-                            "position":  attrs.get("position", ""),
-                        }
-
-                    for p in props:
-                        if not isinstance(p, dict):
-                            continue
-                        p["_sport"] = sport
-                        player_rel = (p.get("relationships") or {}).get("new_player", {})
-                        player_id  = (player_rel.get("data") or {}).get("id")
-                        info       = player_lookup.get(player_id, {})
-                        p["_player"]       = info.get("name") or p.get("attributes", {}).get("description", "")
-                        p["_team"]         = info.get("team", "")
-                        p["_team_name"]    = f"{info.get('market','')} {info.get('team_name','')}".strip()
-                        p["_team_display"] = p["_team_name"] or p.get("attributes", {}).get("description", "")
-
-                    all_props.extend(props)
+                    _annotate_props(props, included, sport)
+                    fetched_props = props
                     print(f"[OK] {sport}: {len(props)} props")
-                    fetched = True
-                    break  # success — no retry needed
+                    break
 
                 elif resp.status_code == 429:
                     if attempt == 0:
-                        print(f"[WARN] PrizePicks {sport} rate-limited — waiting 45s before retry...")
-                        time.sleep(45)
+                        print(f"[WARN] PrizePicks {sport} rate-limited — waiting 60s before retry...")
+                        time.sleep(60)
                     else:
-                        print(f"[WARN] PrizePicks {sport} rate-limited after retry — skipping (will get it next hour)")
+                        print(f"[WARN] PrizePicks {sport} rate-limited after retry — using fallback")
                 else:
                     print(f"[WARN] PrizePicks {sport} returned {resp.status_code}")
                     break
@@ -239,8 +301,21 @@ def fetch_prizepicks_props():
                 print(f"[WARN] PrizePicks {sport} error: {e}")
                 break
 
-        if fetched:
-            time.sleep(5)  # 5s between successful league fetches to stay well under rate limit
+        if fetched_props is not None and len(fetched_props) > 0:
+            # Update both in-memory sub-cache and SQLite
+            fetch_prizepicks_props._sport_cache[sport] = {"data": fetched_props, "fetched_at": now}
+            _save_pp_sport(sport, fetched_props)
+            all_props.extend(fetched_props)
+        else:
+            # Fallback: load last-good data from SQLite
+            db_props, db_ts = _load_pp_sport(sport)
+            if db_props:
+                age_h = int((now - db_ts) / 3600)
+                print(f"[INFO] {sport}: using SQLite fallback ({len(db_props)} props, age ~{age_h}h)")
+                fetch_prizepicks_props._sport_cache[sport] = {"data": db_props, "fetched_at": db_ts}
+                all_props.extend(db_props)
+            else:
+                print(f"[WARN] {sport}: no props and no SQLite fallback available")
 
     result = {
         "props": all_props,
