@@ -3,7 +3,7 @@ import sqlite3
 import json
 import re
 import pandas as pd
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date as date_cls
 import yaml
 from openai import OpenAI
 
@@ -79,7 +79,6 @@ st.markdown("""
   [data-testid="stButton"] button:hover {
     background: rgba(0,212,255,0.1) !important; box-shadow: 0 0 12px rgba(0,212,255,0.3);
   }
-  /* Wide insight button: full-width, compact height, bright accent */
   div[data-testid="stButton"].enrich-btn button {
     width: 100% !important;
     height: 2.4rem !important;
@@ -114,6 +113,39 @@ st.markdown("""
 
 
 # ── Data ─────────────────────────────────────────────────────────────────────
+
+def get_available_dates():
+    """Return list of snapshot dates (YYYY-MM-DD) in descending order, up to 30 days."""
+    try:
+        conn = sqlite3.connect(DB)
+        rows = conn.execute(
+            "SELECT DISTINCT substr(timestamp, 1, 10) FROM snapshots "
+            "WHERE view_level='home' ORDER BY 1 DESC LIMIT 30"
+        ).fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+    except Exception:
+        return []
+
+
+def get_snapshot_for_date(date_str):
+    """Load the most recent snapshot for a given YYYY-MM-DD date string."""
+    try:
+        conn = sqlite3.connect(DB)
+        row = conn.execute(
+            "SELECT raw_data, timestamp FROM snapshots "
+            "WHERE view_level='home' AND timestamp LIKE ? ORDER BY timestamp DESC LIMIT 1",
+            (f"{date_str}%",)
+        ).fetchone()
+        conn.close()
+        if row:
+            d = json.loads(row[0])
+            d["_db_ts"] = row[1]
+            return d
+    except Exception as e:
+        st.warning(f"DB read error: {e}")
+    return None
+
 
 def get_latest_snapshot():
     try:
@@ -158,10 +190,6 @@ def apply_time_filter(props, window_h):
 # ── Props DataFrame ───────────────────────────────────────────────────────────
 
 def build_props_df(props, enrichment=None):
-    """
-    Columns: player | team | stat | line | flash | PP picks | start
-    If enrichment dict provided, adds: szn avg | L5 avg | edge | signal | insight
-    """
     rows = []
     for p in props:
         a    = p.get("attributes", {})
@@ -197,7 +225,6 @@ def build_props_df(props, enrichment=None):
         rows.sort(key=lambda r: r["PP picks"], reverse=True)
 
     df = pd.DataFrame(rows) if rows else pd.DataFrame()
-    # Drop columns that are all empty
     if not df.empty:
         df = df.loc[:, (df.astype(str) != "").any(axis=0)]
     return df
@@ -206,10 +233,6 @@ def build_props_df(props, enrichment=None):
 # ── Kalshi DataFrames ─────────────────────────────────────────────────────────
 
 def kalshi_games_df(markets):
-    """
-    Pairs the two team markets for each game into a single row.
-    Columns: date | sport | game | fav | fav% | dog | dog% | vig | vol
-    """
     from collections import defaultdict
     buckets = defaultdict(list)
     for m in markets:
@@ -226,7 +249,6 @@ def kalshi_games_df(markets):
         total_vol = sum(float(m.get("volume_24h_fp") or 0) for m in pair)
         rows.append({
             "date":  fav.get("_game_date", ""),
-            "sport": fav.get("_sport", ""),
             "game":  fav.get("title", "").replace(" Winner?", ""),
             "fav":   fav.get("yes_sub_title", ""),
             "fav %": f"{fav_pct:.0f}%",
@@ -237,7 +259,7 @@ def kalshi_games_df(markets):
         })
     rows.sort(key=lambda r: (r["date"], -r["vol"]))
     return pd.DataFrame(rows) if rows else pd.DataFrame(
-        columns=["date","sport","game","fav","fav %","dog","dog %","vig","vol"]
+        columns=["date","game","fav","fav %","dog","dog %","vig","vol"]
     )
 
 
@@ -266,7 +288,6 @@ def kalshi_futures_df(markets):
 
 def parse_json_response(text):
     text = re.sub(r"```(?:json)?\s*", "", text).strip().rstrip("`").strip()
-    # Try array first, then object
     for delims in [("[", "]"), ("{", "}")]:
         s, e = text.find(delims[0]), text.rfind(delims[1])
         if s != -1 and e != -1:
@@ -275,10 +296,6 @@ def parse_json_response(text):
 
 
 def enrich_with_grok(props):
-    """
-    Send filtered props to Grok. Returns dict keyed by 'player/stat_type'
-    with keys: season_avg, last_5_avg, edge, signal, context.
-    """
     items = []
     seen  = set()
     for p in props:
@@ -359,9 +376,41 @@ Payload: {json.dumps(payload)[:60000]}
         return {"error": str(ex)}
 
 
-# ── Load data ─────────────────────────────────────────────────────────────────
+# ── Session state init ────────────────────────────────────────────────────────
 
-data = get_latest_snapshot()
+if "enrichment_cache" not in st.session_state:
+    st.session_state["enrichment_cache"] = {}
+if "auto_ran" not in st.session_state:
+    st.session_state["auto_ran"] = set()
+
+
+# ── Sidebar — global filters ──────────────────────────────────────────────────
+
+st.sidebar.markdown(
+    "<div style='font-size:0.65rem;letter-spacing:0.2em;text-transform:uppercase;"
+    "color:#00D4FF;padding-bottom:0.5rem;border-bottom:1px solid rgba(0,212,255,0.2);'>"
+    "Filter Panel</div>", unsafe_allow_html=True
+)
+
+# Date picker — browse historical snapshots
+available_dates = get_available_dates()
+if len(available_dates) > 1:
+    latest_date = date_cls.fromisoformat(available_dates[0])
+    oldest_date = date_cls.fromisoformat(available_dates[-1])
+    date_sel = st.sidebar.date_input(
+        "Snapshot Date",
+        value=latest_date,
+        min_value=oldest_date,
+        max_value=latest_date,
+        help="Browse historical snapshots. Defaults to today's latest."
+    )
+    selected_date_str = date_sel.isoformat()
+    data = get_snapshot_for_date(selected_date_str)
+    if not data:
+        data = get_latest_snapshot()
+else:
+    data = get_latest_snapshot()
+
 if not data:
     st.error("No snapshot. Start: `python snapshot_orchestrator.py`")
     st.stop()
@@ -370,95 +419,14 @@ all_props  = data.get("prizepicks", {}).get("props", [])
 all_kalshi = data.get("kalshi", [])
 all_games  = data.get("sports_data", {}).get("games", [])
 
-if "enrichment_cache" not in st.session_state:
-    st.session_state["enrichment_cache"] = {}
-
-
-# ── Sidebar — filters only ────────────────────────────────────────────────────
-
-st.sidebar.markdown(
-    "<div style='font-size:0.65rem;letter-spacing:0.2em;text-transform:uppercase;"
-    "color:#00D4FF;padding-bottom:0.5rem;border-bottom:1px solid rgba(0,212,255,0.2);'>"
-    "Filter Panel</div>", unsafe_allow_html=True
-)
-
-sport_options     = sorted({p.get("_sport") for p in all_props if p.get("_sport")})
-sport_labels_map  = {f"{SPORT_LABELS.get(s,s)} ({s})": s for s in sport_options}
-sport_label_sel   = st.sidebar.radio("Sport", ["All"] + list(sport_labels_map.keys()))
-sport_sel         = None if sport_label_sel == "All" else sport_labels_map[sport_label_sel]
-
-props_by_sport = [p for p in all_props if not sport_sel or p.get("_sport") == sport_sel]
-
-teams_map = {}
-for p in props_by_sport:
-    abbrev  = p.get("_team", "")
-    display = p.get("_team_display", abbrev)
-    if abbrev and display:
-        teams_map[abbrev] = display
-
-team_sel_display = st.sidebar.selectbox("Team", ["All"] + sorted(teams_map.values()))
-team_abbrev      = None
-if team_sel_display != "All":
-    team_abbrev = next((k for k, v in teams_map.items() if v == team_sel_display), None)
-
-props_by_team = [p for p in props_by_sport if not team_abbrev or p.get("_team") == team_abbrev]
-
-players_in_team = sorted({
-    p.get("_player", "") for p in props_by_team
-    if p.get("_player") and len(p.get("_player", "")) > 3
-})
-player_sel = st.sidebar.selectbox("Player", ["All"] + players_in_team)
-
-# Prop type filter (populates from sport + team selection)
-stat_types_available = sorted({
-    p.get("attributes", {}).get("stat_type", "")
-    for p in props_by_team
-    if p.get("attributes", {}).get("stat_type")
-})
-stat_sel = st.sidebar.multiselect("Prop Type", stat_types_available)
-
-time_label  = st.sidebar.selectbox("Time window", ["Next 6 hours", "Next 12 hours", "Next 24 hours", "All upcoming"])
-time_hours  = {"Next 6 hours": 6, "Next 12 hours": 12, "Next 24 hours": 24, "All upcoming": 0}[time_label]
-
+time_label   = st.sidebar.selectbox("Time window", ["Next 6 hours", "Next 12 hours", "Next 24 hours", "All upcoming"])
+time_hours   = {"Next 6 hours": 6, "Next 12 hours": 12, "Next 24 hours": 24, "All upcoming": 0}[time_label]
 min_trending = st.sidebar.slider("Min PP picks", 0, 500, 0, step=25)
 
-# Apply all filters
-filtered_props = props_by_team
-if player_sel != "All":
-    filtered_props = [p for p in filtered_props if p.get("_player") == player_sel]
-if time_hours:
-    filtered_props = apply_time_filter(filtered_props, time_hours)
-filtered_props = [
-    p for p in filtered_props
-    if (p.get("attributes", {}).get("trending_count") or 0) >= min_trending
-]
-if stat_sel:
-    filtered_props = [
-        p for p in filtered_props
-        if p.get("attributes", {}).get("stat_type") in stat_sel
-    ]
-
-# Kalshi crossover
-def kalshi_for_context(team_display, sport, kalshi_all):
-    """
-    For the Props tab crossover panel: prefer game markets, fall back to futures.
-    Filters by team city name when a team is selected, otherwise by sport.
-    """
-    game_mkts = [m for m in kalshi_all if m.get("_market_type") == "game"]
-    if team_display and team_display != "All":
-        city = team_display.split()[0].lower()
-        matched = [m for m in game_mkts if city in m.get("title", "").lower()
-                   or city in m.get("yes_sub_title", "").lower()]
-        if matched:
-            return matched
-    if sport:
-        sport_series = {"NBA": "KXNBAGAME", "NHL": "KXNHLGAME", "MLB": "KXMLBGAME"}
-        series = sport_series.get(sport)
-        if series:
-            return [m for m in game_mkts if m.get("_series") == series]
-    return game_mkts
-
-ctx_kalshi = kalshi_for_context(team_sel_display, sport_sel, all_kalshi)
+st.sidebar.markdown("---")
+st.sidebar.caption(f"Snapshot: {data['_db_ts']}")
+st.sidebar.caption(f"Props loaded: {len(all_props)}")
+st.sidebar.caption(f"Kalshi markets: {len(all_kalshi)}")
 
 
 # ── Header ────────────────────────────────────────────────────────────────────
@@ -487,118 +455,157 @@ if alerts:
             f"**{a['free_money_ml']}**"
         )
 
-tab_props, tab_kalshi, tab_grok = st.tabs(["Props", "Kalshi Markets", "Grok Analysis"])
 
+# ── Per-sport tab renderer ────────────────────────────────────────────────────
 
-# ── PROPS TAB ────────────────────────────────────────────────────────────────
+def render_sport_tab(sport, auto_run=False):
+    """Render game lines + player props for one sport. auto_run=True fires Grok automatically."""
+    sport_label = SPORT_LABELS.get(sport, sport)
 
-with tab_props:
-    crumb = " > ".join(filter(None, [
-        SPORT_LABELS.get(sport_sel, sport_sel) if sport_sel else None,
-        team_sel_display if team_sel_display != "All" else None,
-        player_sel if player_sel != "All" else None,
-    ])) or "All Sports"
-    st.caption(f"Snapshot: {data['_db_ts']}  |  {now_utc}  |  {crumb}")
+    sport_props  = [p for p in all_props  if p.get("_sport") == sport]
+    sport_kalshi = [m for m in all_kalshi if m.get("_sport") == sport and m.get("_market_type") == "game"]
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Props", len(filtered_props))
-    c2.metric("Kalshi context", len(ctx_kalshi))
-    live_n = sum(1 for p in filtered_props if p.get("attributes", {}).get("is_live"))
-    c3.metric("Live", live_n)
+    if not sport_props and not sport_kalshi:
+        st.info(f"No {sport_label} data in this snapshot. Check the orchestrator.")
+        return
 
-    # ── Enrichment controls ──
-    cache_key = f"{sport_sel}|{team_abbrev}|{player_sel}|{time_hours}|{min_trending}"
-    enrichment = st.session_state["enrichment_cache"].get(cache_key)
+    # ── Inline filters (team / player / prop type) ──
+    col1, col2, col3 = st.columns([2, 2, 3])
 
-    enrich_btn_label = (
-        f"Get Grok Insight — {len(filtered_props)} props"
-        if not enrichment else "Refresh Insight"
+    teams_map = {}
+    for p in sport_props:
+        abbrev  = p.get("_team", "")
+        display = p.get("_team_display", abbrev)
+        if abbrev and display:
+            teams_map[abbrev] = display
+
+    team_display = col1.selectbox("Team", ["All"] + sorted(teams_map.values()), key=f"{sport}_team")
+    team_abbrev  = None if team_display == "All" else next(
+        (k for k, v in teams_map.items() if v == team_display), None
     )
 
-    if filtered_props:
-        if enrichment and not enrichment.get("_error"):
+    by_team = [p for p in sport_props if not team_abbrev or p.get("_team") == team_abbrev]
+
+    players  = sorted({p.get("_player", "") for p in by_team if len(p.get("_player", "")) > 3})
+    player_sel = col2.selectbox("Player", ["All"] + players, key=f"{sport}_player")
+
+    stat_types = sorted({
+        p.get("attributes", {}).get("stat_type", "")
+        for p in by_team
+        if p.get("attributes", {}).get("stat_type")
+    })
+    stat_sel = col3.multiselect("Prop Type", stat_types, key=f"{sport}_stat")
+
+    # Apply filters
+    filtered = by_team
+    if player_sel != "All":
+        filtered = [p for p in filtered if p.get("_player") == player_sel]
+    if time_hours:
+        filtered = apply_time_filter(filtered, time_hours)
+    filtered = [
+        p for p in filtered
+        if (p.get("attributes", {}).get("trending_count") or 0) >= min_trending
+    ]
+    if stat_sel:
+        filtered = [p for p in filtered if p.get("attributes", {}).get("stat_type") in stat_sel]
+
+    # ── Metrics row ──
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Props", len(filtered))
+    c2.metric("Games (Kalshi)", len(sport_kalshi) // 2 if sport_kalshi else 0)
+    live_n = sum(1 for p in filtered if p.get("attributes", {}).get("is_live"))
+    c3.metric("Live props", live_n)
+
+    # ── Kalshi game lines for this sport ──
+    if sport_kalshi:
+        st.subheader("Game Lines (Kalshi)")
+        df_gl = kalshi_games_df(sport_kalshi)
+        if not df_gl.empty:
+            st.dataframe(df_gl, use_container_width=True, hide_index=True)
             st.caption(
-                "Sorted by |edge|.  "
-                "**Edge** = Grok season avg − PrizePicks line (+ = lean OVER, − = lean UNDER).  "
-                "**PP picks** = PrizePicks parlay count (sentiment only, not edge)."
+                "fav % / dog % = Kalshi implied win probability.  "
+                "vig = market take.  vol = 24h contracts traded."
             )
         else:
-            st.caption("Click below to load Grok season-avg stats and EV edge for each prop.")
+            st.info("No game line pairs found.")
+    else:
+        st.info(f"No Kalshi {sport_label} game lines in the 48h window.")
 
-        st.markdown('<div class="enrich-btn">', unsafe_allow_html=True)
-        do_enrich = st.button(enrich_btn_label, use_container_width=True, key="enrich_btn")
-        st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown("---")
 
-        if do_enrich:
-            with st.spinner(f"Asking Grok for stats on {len(filtered_props)} props..."):
-                result = enrich_with_grok(filtered_props)
-            st.session_state["enrichment_cache"][cache_key] = result
+    # ── Player props with Grok enrichment ──
+    cache_key   = f"{sport}|{team_abbrev}|{player_sel}|{'|'.join(sorted(stat_sel))}|{time_hours}|{min_trending}"
+    enrichment  = st.session_state.enrichment_cache.get(cache_key)
+
+    h_col, btn_col = st.columns([4, 1])
+    h_col.subheader(f"Player Props — {len(filtered)} props")
+
+    # Auto-run Grok on first render of this cache_key (gated by session state)
+    if auto_run and filtered and enrichment is None and cache_key not in st.session_state.auto_ran:
+        st.session_state.auto_ran.add(cache_key)
+        with st.spinner(f"Auto-loading Grok insights for {sport_label}..."):
+            result = enrich_with_grok(filtered)
+            st.session_state.enrichment_cache[cache_key] = result
             enrichment = result
-            if result.get("_error"):
-                st.error(f"Enrichment error: {result['_error']}")
 
-    df = build_props_df(filtered_props, enrichment=enrichment if enrichment and not enrichment.get("_error") else None)
+    # Manual button to load or refresh
+    btn_label = "Refresh" if enrichment else "Get Grok Insight"
+    if btn_col.button(btn_label, key=f"{sport}_grok_btn", use_container_width=True):
+        with st.spinner(f"Calling Grok for {len(filtered)} props..."):
+            result = enrich_with_grok(filtered)
+            st.session_state.enrichment_cache[cache_key] = result
+            enrichment = result
+            # Allow re-running after a manual refresh
+            st.session_state.auto_ran.discard(cache_key)
+
+    if enrichment and enrichment.get("_error"):
+        st.error(f"Grok error: {enrichment['_error']}")
+        enrichment = None
+    elif enrichment:
+        st.caption(
+            "Sorted by |edge|.  "
+            "**Edge** = Grok season avg − PrizePicks line (+ = lean OVER, − = lean UNDER).  "
+            "**PP picks** = parlay count (sentiment, not edge)."
+        )
+    else:
+        st.caption("Click **Get Grok Insight** to load AI-powered season avg + edge analysis.")
+
+    df = build_props_df(filtered, enrichment=enrichment)
     if not df.empty:
         st.dataframe(df, use_container_width=True, hide_index=True)
     else:
         st.info("No props match your filters. Try widening the time window or removing filters.")
 
-    # Kalshi crossover — game lines for selected team/sport
-    if ctx_kalshi:
-        st.markdown("---")
-        label = (
-            f"Kalshi Game Lines — {team_sel_display}"
-            if team_sel_display != "All"
-            else f"Kalshi Game Lines — {SPORT_LABELS.get(sport_sel, sport_sel) if sport_sel else 'All sports'}"
-        )
-        st.subheader(label)
-        df_cx = kalshi_games_df(ctx_kalshi)
-        if not df_cx.empty:
-            st.dataframe(df_cx, use_container_width=True, hide_index=True)
-        else:
-            st.info("No game lines found for this filter.")
+
+# ── Tabs ──────────────────────────────────────────────────────────────────────
+
+tab_nba, tab_nhl, tab_mlb, tab_kalshi, tab_grok = st.tabs(
+    ["NBA", "NHL", "MLB", "Kalshi Futures", "Grok Analysis"]
+)
+
+with tab_nba:
+    render_sport_tab("NBA", auto_run=False)
+
+with tab_nhl:
+    # NHL auto-runs on first load — user's primary use case (hits, blocks, etc.)
+    render_sport_tab("NHL", auto_run=True)
+
+with tab_mlb:
+    render_sport_tab("MLB", auto_run=False)
 
 
-# ── KALSHI MARKETS TAB ────────────────────────────────────────────────────────
+# ── KALSHI FUTURES TAB ────────────────────────────────────────────────────────
 
 with tab_kalshi:
     st.caption(f"Snapshot: {data['_db_ts']}  |  {now_utc}")
 
-    game_markets    = [m for m in all_kalshi if m.get("_market_type") == "game"]
     futures_markets = [m for m in all_kalshi if m.get("_market_type") == "futures"]
-
-    # ── Game Lines (48h window) ──
-    st.subheader(f"Game Lines — Next 48 Hours ({len(game_markets) // 2} games)")
-    df_games = kalshi_games_df(game_markets)
-    if not df_games.empty:
-        sport_filter = st.selectbox("Sport", ["All", "NBA", "NHL", "MLB"], key="kalshi_sport")
-        search_k     = st.text_input("Search team / game", key="kalshi_search")
-        df_show = df_games.copy()
-        if sport_filter != "All":
-            df_show = df_show[df_show["sport"] == sport_filter]
-        if search_k:
-            mask = df_show.apply(
-                lambda r: search_k.lower() in r["game"].lower()
-                       or search_k.lower() in r["fav"].lower()
-                       or search_k.lower() in r["dog"].lower(), axis=1
-            )
-            df_show = df_show[mask]
-        st.dataframe(df_show, use_container_width=True, hide_index=True)
-        st.caption(
-            "fav % / dog % = Kalshi implied win probability.  "
-            "vig = market take (lower = tighter market).  "
-            "vol = 24h contracts traded."
-        )
-    else:
-        st.info("No game markets in window. Check orchestrator logs.")
-
-    st.markdown("---")
-
-    # ── Championship Futures ──
     st.subheader(f"Championship Futures ({len(futures_markets)} markets)")
     df_fut = kalshi_futures_df(futures_markets)
     if not df_fut.empty:
-        st.dataframe(df_fut, use_container_width=True, hide_index=True)
+        sport_f = st.selectbox("Sport", ["All", "NBA", "NHL", "MLB"], key="fut_sport")
+        df_show = df_fut if sport_f == "All" else df_fut[df_fut["sport"] == sport_f]
+        st.dataframe(df_show, use_container_width=True, hide_index=True)
     else:
         st.info("No futures data.")
 
@@ -606,16 +613,23 @@ with tab_kalshi:
 # ── GROK ANALYSIS TAB ─────────────────────────────────────────────────────────
 
 with tab_grok:
-    focus_label = " > ".join(filter(None, [
-        SPORT_LABELS.get(sport_sel, sport_sel) if sport_sel else "All Sports",
-        team_sel_display if team_sel_display != "All" else None,
-        player_sel if player_sel != "All" else None,
-    ]))
-    st.info(f"Analyzing: **{focus_label}** — {len(filtered_props)} props + {len(ctx_kalshi)} Kalshi markets")
+    st.caption(f"Full deep-dive: sends top 50 props + Kalshi lines to Grok for comprehensive EV analysis.")
+
+    grok_sport = st.selectbox("Sport focus", ["All Sports", "NBA", "NHL", "MLB"], key="grok_sport_sel")
+    if grok_sport == "All Sports":
+        g_props  = all_props
+        g_kalshi = [m for m in all_kalshi if m.get("_market_type") == "game"]
+        focus_label = "All Sports"
+    else:
+        g_props  = [p for p in all_props  if p.get("_sport") == grok_sport]
+        g_kalshi = [m for m in all_kalshi if m.get("_sport") == grok_sport and m.get("_market_type") == "game"]
+        focus_label = SPORT_LABELS.get(grok_sport, grok_sport)
+
+    st.info(f"Analyzing: **{focus_label}** — {len(g_props)} props + {len(g_kalshi)} Kalshi markets")
 
     if st.button("Run Full Analysis"):
         with st.spinner("Calling Grok (~15s)..."):
-            result = grok_full_analysis(filtered_props, ctx_kalshi, focus_label)
+            result = grok_full_analysis(g_props, g_kalshi, focus_label)
 
         if "error" in result:
             st.error(result["error"])
