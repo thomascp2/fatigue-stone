@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+.env
+
+# Card data is large and fetched via scripts/fetch_cards.py
+data/cards.json
+# Keep the data directory itself
+!data/.gitkeep
