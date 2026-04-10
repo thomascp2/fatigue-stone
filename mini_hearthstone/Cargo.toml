@@ -1,0 +1,13 @@
+[package]
+name = "mini_hearthstone"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# rand provides random number generation — we use it to shuffle decks.
+# We disable default features (which pull in OS-level entropy via getrandom)
+# and only enable:
+#   alloc — needed so Vec/String work inside rand
+#   chacha — the ChaCha20 RNG, a pure-Rust CSPRNG that needs no OS calls
+# We seed it ourselves from std::time so we still get varied shuffles.
+rand = { version = "0.10", default-features = false, features = ["alloc", "chacha"] }
